@@ -1,0 +1,31 @@
+[profile]
+# Эти файлы остаются вне репозитория. MCP читает только релевантные фрагменты.
+knowledge_paths = [
+  "/absolute/path/to/baza_znaniy_opyt.md",
+  "/absolute/path/to/baza_keysov_interview.md",
+]
+cover_letter_rules_path = "/absolute/path/to/pamyatka_soprovoditelnye.md"
+
+[search]
+area = "1"
+days = 14
+per_query = 10
+queries = [
+  "Руководитель AI проектов",
+  "AI Product Manager",
+  "Руководитель ИТ-проектов GenAI",
+  "Delivery Manager",
+  "Product Owner FinTech",
+  "Консультант цифровая трансформация AI",
+]
+
+[safety]
+daily_application_limit = 10
+daily_message_limit = 30
+minimum_read_interval_seconds = 0.8
+minimum_write_interval_seconds = 10.0
+confirmation_ttl_minutes = 15
+
+[hh]
+base_url = "https://api.hh.ru"
+user_agent = "amir-job-finder/0.1 (personal local assistant; https://im-iaa.ru/)"
