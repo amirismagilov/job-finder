@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Job Finder Session Bridge",
+  "version": "0.2.0",
+  "description": "Выполняет только фиксированные HTTP-действия hh.ru в текущей сессии браузера.",
+  "permissions": ["storage", "tabs", "alarms"],
+  "host_permissions": [
+    "https://hh.ru/*",
+    "https://chatik.hh.ru/*",
+    "http://127.0.0.1:8766/*"
+  ],
+  "background": {"service_worker": "background.js"},
+  "content_scripts": [
+    {
+      "matches": ["https://hh.ru/*", "https://chatik.hh.ru/*"],
+      "js": ["projectors.js", "page_executor.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {"default_title": "Job Finder Session Bridge"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
+}

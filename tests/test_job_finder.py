@@ -1,185 +1,125 @@
-from __future__ import annotations
-
+import ctypes
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
-from job_finder.config import Config, HHConfig, ProfileConfig, SafetyConfig, SearchConfig
-from job_finder.hh_client import APIResponse, HHClient, HHError
-from job_finder.keychain import MemorySecrets
-from job_finder.knowledge import KnowledgeBase
-from job_finder.matching import normalize_vacancy
+from job_finder.config import load_config
+from job_finder.keychain import MacOSKeychain, MemorySecrets
 from job_finder.mcp_server import handle_message
-from job_finder.service import JobFinderService
-from job_finder.storage import Storage
+from job_finder.storage import Storage, WriteGuardError
 
 
-def make_config(root: Path, knowledge: Path, rules: Path) -> Config:
-    return Config(
-        root=root,
-        profile=ProfileConfig((knowledge,), rules),
-        search=SearchConfig("1", 14, 10, ("AI Product Manager",)),
-        safety=SafetyConfig(10, 30, 0.5, 5.0, 15),
-        hh=HHConfig("https://api.hh.ru", "job-finder-tests/0.1"),
-    )
+class ConfigAndStorageTest(unittest.TestCase):
+    def test_example_config_loads_with_conservative_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            knowledge, rules = root / "k.md", root / "r.md"
+            knowledge.write_text("# Опыт", encoding="utf-8")
+            rules.write_text("# Правила", encoding="utf-8")
+            config = root / "config.toml"
+            config.write_text(f'''[profile]\nknowledge_paths=["{knowledge}"]\ncover_letter_rules_path="{rules}"\n[search]\nqueries=["AI"]\n''', encoding="utf-8")
+            loaded = load_config(config)
+            self.assertEqual(loaded.safety.daily_application_limit, 5)
+            self.assertEqual(loaded.safety.daily_message_limit, 20)
+            self.assertEqual(loaded.safety.minimum_write_interval_seconds, 30)
+            self.assertEqual(loaded.bridge.host, "127.0.0.1")
 
+    def test_storage_opt_in_dedupe_and_private_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "private" / "state.sqlite3"
+            storage = Storage(path)
+            self.assertFalse(storage.autonomy_enabled())
+            storage.set_autonomy(True)
+            storage.record_vacancy("vacancy-a", "applied", score=90, input_hash="hash")
+            storage.mark_message_processed("message-a", "chat-a", "response-a", "hash")
+            self.assertTrue(storage.autonomy_enabled())
+            self.assertEqual(storage.vacancy_status("vacancy-a"), "applied")
+            self.assertTrue(storage.message_processed("message-a"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
-def vacancy(vacancy_id: str = "123") -> dict:
-    return {
-        "id": vacancy_id,
-        "name": "Руководитель AI-проектов",
-        "description": "Управление LLM-платформой, B2B, интеграции REST и Kafka",
-        "employer": {"name": "Тест"},
-        "area": {"name": "Москва"},
-        "relations": [],
-        "key_skills": [{"name": "Project Management"}],
-        "alternate_url": f"https://hh.ru/vacancy/{vacancy_id}",
-    }
+    def test_concurrent_write_reservations_own_one_daily_slot_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "state.sqlite3"
+            Storage(path).set_autonomy(True)
+            barrier = threading.Barrier(2)
+            outcomes = []
 
+            def reserve(target):
+                storage = Storage(path)
+                barrier.wait()
+                try:
+                    outcomes.append(storage.reserve_write("application", target, daily_limit=1, minimum_interval_seconds=0).target)
+                except WriteGuardError as exc:
+                    outcomes.append(exc.reason)
 
-class FakeClient:
-    def __init__(self) -> None:
-        self.applications: list[tuple[str, str, str]] = []
-        self.messages: list[tuple[str, str, str]] = []
-        self.apply_error: HHError | None = None
+            threads = [threading.Thread(target=reserve, args=(f"vacancy-{index}",)) for index in range(2)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join(5)
+            self.assertEqual(len([item for item in outcomes if item.startswith("vacancy-")]), 1)
+            self.assertEqual(outcomes.count("application_daily_limit"), 1)
 
-    def auth_summary(self) -> dict:
-        return {"access_token_present": True}
+    def test_write_reservation_enforces_minimum_interval_with_fake_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            storage = Storage(Path(name) / "state.sqlite3")
+            current = [datetime(2026, 1, 1, tzinfo=UTC)]
+            storage.now = lambda: current[0]
+            storage.set_autonomy(True)
+            first = storage.reserve_write("application", "vacancy-a", daily_limit=5, minimum_interval_seconds=30)
+            storage.finish_write(first, success=True)
+            current[0] += timedelta(seconds=29)
+            with self.assertRaisesRegex(WriteGuardError, "minimum_write_interval"):
+                storage.reserve_write("application", "vacancy-b", daily_limit=5, minimum_interval_seconds=30)
+            current[0] += timedelta(seconds=1)
+            self.assertEqual(storage.reserve_write("application", "vacancy-b", daily_limit=5, minimum_interval_seconds=30).target, "vacancy-b")
 
-    def get_vacancy(self, vacancy_id: str) -> dict:
-        return vacancy(vacancy_id)
+    def test_secret_store_delete_removes_binding_in_memory_and_native_contract(self) -> None:
+        memory = MemorySecrets()
+        memory.set("bridge_extension_id", "extension")
+        self.assertTrue(memory.delete("bridge_extension_id"))
+        self.assertFalse(memory.delete("bridge_extension_id"))
+        self.assertIsNone(memory.get("bridge_extension_id"))
 
-    def apply(self, vacancy_id: str, resume_id: str, message: str) -> APIResponse:
-        if self.apply_error:
-            raise self.apply_error
-        self.applications.append((vacancy_id, resume_id, message))
-        return APIResponse(201, "", {"Location": "/negotiations/1"})
+        calls = []
 
-    def chat_messages(self, chat_id: str, *, limit: int = 20) -> dict:
-        return {
-            "id": chat_id,
-            "vacancy_id": "123",
-            "display": {"title": "Тест"},
-            "chat_states": {"write_message_state": {"allowed": True}},
-            "items": [],
-        }
+        class Security:
+            def SecKeychainFindGenericPassword(self, _keychain, _service_length, _service, _account_length, _account, length, data, item):
+                length._obj.value = 0
+                data._obj.value = None
+                item._obj.value = 42
+                return 0
 
-    def send_chat_message(self, chat_id: str, message: str, idempotency_key: str) -> APIResponse:
-        self.messages.append((chat_id, message, idempotency_key))
-        return APIResponse(201, {"id": "message-1"}, {})
+            def SecKeychainItemFreeContent(self, _attributes, _data): return 0
 
+            def SecKeychainItemDelete(self, item):
+                calls.append(item.value)
+                return 0
 
-class ServiceTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
-        knowledge = root / "knowledge.md"
-        rules = root / "rules.md"
-        knowledge.write_text(
-            "# База\n## Общие данные\n10+ лет управляю ИТ-проектами.\n"
-            "## AI\nВнедрил LLM и RAG, высвободил 2 FTE.\n"
-            "## Границы\nНе обучал ML-модели.\n",
-            encoding="utf-8",
-        )
-        rules.write_text("# Правила\nПисать 3-5 пунктов, нумерация 1/.", encoding="utf-8")
-        self.config = make_config(root, knowledge, rules)
-        self.client = FakeClient()
-        self.storage = Storage(root / "state.sqlite3")
-        self.service = JobFinderService(self.config, self.client, self.storage, KnowledgeBase(self.config.profile))
+        class CoreFoundation:
+            def CFRelease(self, item): calls.append(("release", item.value))
 
-    def tearDown(self) -> None:
-        self.temp.cleanup()
-
-    def test_cover_context_uses_confirmed_knowledge(self) -> None:
-        result = self.service.prepare_cover_letter("123")
-        self.assertIn("высвободил 2 FTE", result["approved_candidate_context"])
-        self.assertIn("ничего не отправляй", result["task"].lower())
-
-    def test_application_is_two_step_and_confirmation_is_single_use(self) -> None:
-        preview = self.service.prepare_application(vacancy_id="123", resume_id="resume", cover_letter="Письмо")
-        with self.assertRaises(ValueError):
-            self.service.submit_application(confirmation_id=preview["confirmation_id"], confirmation="да")
-        self.assertEqual(self.client.applications, [])
-
-        result = self.service.submit_application(confirmation_id=preview["confirmation_id"], confirmation="ОТПРАВИТЬ")
-        self.assertEqual(result["status"], 201)
-        self.assertEqual(len(self.client.applications), 1)
-        with self.assertRaises(RuntimeError):
-            self.service.submit_application(confirmation_id=preview["confirmation_id"], confirmation="ОТПРАВИТЬ")
-
-    def test_hh_limit_activates_hard_stop(self) -> None:
-        self.client.apply_error = HHError(
-            "limit", status=403, codes=("negotiations", "limit_exceeded")
-        )
-        preview = self.service.prepare_application(vacancy_id="123", resume_id="resume", cover_letter="Письмо")
-        with self.assertRaises(HHError):
-            self.service.submit_application(confirmation_id=preview["confirmation_id"], confirmation="ОТПРАВИТЬ")
-        self.assertIn("limit", self.storage.hard_stop() or "")
-
-    def test_ambiguous_network_failure_activates_hard_stop(self) -> None:
-        self.client.apply_error = HHError("network timeout")
-        preview = self.service.prepare_application(vacancy_id="123", resume_id="resume", cover_letter="Письмо")
-        with self.assertRaises(HHError):
-            self.service.submit_application(confirmation_id=preview["confirmation_id"], confirmation="ОТПРАВИТЬ")
-        self.assertIn("Неопределённый результат", self.storage.hard_stop() or "")
-
-    def test_chat_message_is_two_step(self) -> None:
-        preview = self.service.prepare_chat_message(chat_id="chat", message="Здравствуйте")
-        self.assertTrue(preview["preview"]["marked_as_automated"])
-        self.service.submit_chat_message(confirmation_id=preview["confirmation_id"], confirmation="ОТПРАВИТЬ")
-        self.assertEqual(self.client.messages[0][0:2], ("chat", "Здравствуйте"))
-
-
-class MatchingTest(unittest.TestCase):
-    def test_relevance_is_explainable(self) -> None:
-        result = normalize_vacancy(vacancy(), include_description=True)
-        self.assertGreaterEqual(result["match"]["score"], 60)
-        self.assertIn("AI/GenAI", result["match"]["reasons"])
-        self.assertNotIn("<", result["description"])
-
-
-class CaptureClient(HHClient):
-    def __init__(self, config: Config) -> None:
-        super().__init__(config, MemorySecrets())
-        self.captured: dict = {}
-
-    def request(self, method: str, path: str, **kwargs):  # type: ignore[override]
-        self.captured = {"method": method, "path": path, **kwargs}
-        return APIResponse(201, {"id": "1"}, {})
-
-
-class ClientTest(unittest.TestCase):
-    def test_chat_marks_ai_and_uses_idempotency(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
-            root = Path(temp_name)
-            knowledge = root / "k.md"
-            rules = root / "r.md"
-            knowledge.write_text("# k", encoding="utf-8")
-            rules.write_text("# r", encoding="utf-8")
-            client = CaptureClient(make_config(root, knowledge, rules))
-            client.send_chat_message("chat", "Текст", "00000000-0000-4000-8000-000000000000")
-            self.assertEqual(client.captured["path"], "/common/chats/chat/messages")
-            self.assertTrue(client.captured["json_body"]["is_automated"])
-            self.assertEqual(client.captured["json_body"]["idempotency_key"], "00000000-0000-4000-8000-000000000000")
+        native = MacOSKeychain.__new__(MacOSKeychain)
+        native._security = Security()
+        native._cf = CoreFoundation()
+        native._keychain = ctypes.c_void_p(1)
+        native._service = b"test"
+        self.assertTrue(native.delete("bridge_extension_id"))
+        self.assertEqual(calls, [42, ("release", 42)])
 
 
 class MCPTest(unittest.TestCase):
     class FakeService:
-        def status(self):
-            return {"ok": True}
+        def status(self): return {"ok": True}
+        def run_cycle(self, *, dry_run): return {"dry_run": dry_run}
+        def recent_audit(self, *, limit): return {"limit": limit}
 
-    def test_initialize_and_status_tool(self) -> None:
-        initialized = handle_message(
-            self.FakeService(),
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
-        )
-        self.assertEqual(initialized["result"]["serverInfo"]["name"], "amir-job-finder")
-        called = handle_message(
-            self.FakeService(),
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "status", "arguments": {}}},
-        )
+    def test_initialize_and_dry_run_default(self) -> None:
+        initialized = handle_message(self.FakeService(), {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        self.assertEqual(initialized["result"]["serverInfo"]["version"], "0.2.0")
+        called = handle_message(self.FakeService(), {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "run_autonomous_cycle", "arguments": {}}})
         self.assertFalse(called["result"]["isError"])
-        self.assertIn('"ok": true', called["result"]["content"][0]["text"])
+        self.assertIn('"dry_run": true', called["result"]["content"][0]["text"])
 
 
 if __name__ == "__main__":

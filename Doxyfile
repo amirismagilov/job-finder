@@ -1,0 +1,28 @@
+PROJECT_NAME           = "amir-job-finder"
+PROJECT_NUMBER         = "0.2.0"
+OUTPUT_DIRECTORY       = doxygen_output
+INPUT                  = src/job_finder
+FILE_PATTERNS           = *.py
+RECURSIVE               = YES
+EXTRACT_ALL             = YES
+EXTRACT_PRIVATE         = YES
+OPTIMIZE_OUTPUT_JAVA    = NO
+GENERATE_HTML           = NO
+GENERATE_LATEX          = NO
+GENERATE_XML            = YES
+XML_OUTPUT              = xml
+QUIET                   = YES
+WARN_IF_UNDOCUMENTED    = NO
+WARN_IF_DOC_ERROR       = YES
+HAVE_DOT                = NO
+ALIASES                += modulecontract="\par Module contract:"
+ALIASES                += purpose="\par Purpose:"
+ALIASES                += scope="\par Scope:"
+ALIASES                += input="\par Input:"
+ALIASES                += output="\par Output:"
+ALIASES                += invariants="\par Invariants:"
+ALIASES                += rationale="\par Rationale:"
+ALIASES                += changes="\par Changes:"
+ALIASES                += modulemap="\par Module map:"
+ALIASES                += io="\par Input/output:"
+ALIASES                += complexity="\par Complexity:"

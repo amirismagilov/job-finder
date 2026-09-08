@@ -1,0 +1,6 @@
+body { font: 16px system-ui, sans-serif; margin: 2rem; max-width: 760px; }
+main { display: grid; gap: 1rem; }
+label { display: grid; gap: .4rem; }
+input { padding: .6rem; width: min(42rem, 90vw); }
+button { margin-right: .5rem; padding: .55rem .9rem; }
+#status { font-weight: 600; }

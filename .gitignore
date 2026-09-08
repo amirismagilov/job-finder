@@ -20,3 +20,7 @@ state/
 .env.*
 *.pem
 *.key
+*.har
+
+# Локальные отчёты документации/покрытия.
+doxygen_output/

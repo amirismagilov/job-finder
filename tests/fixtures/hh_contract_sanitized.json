@@ -1,0 +1,14 @@
+{
+  "source": "sanitized HAR metadata only; no values, identifiers, bodies or credentials",
+  "actions": {
+    "SEARCH_VACANCIES": {"method": "GET", "origin": "https://hh.ru", "path": "/search/vacancy", "query_fields": ["area", "text"]},
+    "GET_VACANCY": {"method": "GET", "origin": "https://hh.ru", "path_template": "/vacancy/{vacancy_id}"},
+    "GET_RESPONSE_POPUP": {"method": "GET", "origin": "https://hh.ru", "path": "/applicant/vacancy_response/popup", "query_fields": ["isTest", "lux", "vacancyId", "withoutTest"], "response_required": ["responseStatus"]},
+    "APPLY": {"method": "POST", "origin": "https://hh.ru", "path": "/applicant/vacancy_response/popup", "form_fields": ["_xsrf", "hhtmFromLabel", "hhtmSourceLabel", "ignore_postponed", "incomplete", "letter", "lux", "resume_hash", "vacancy_id", "withoutTest"], "response_required": ["success", "topic_id"]},
+    "LIST_CHATS": {"method": "GET", "origin": "https://chatik.hh.ru", "path": "/chatik/api/chats", "query_fields": ["do_not_track_session_events", "filterHasTextMessage", "filterUnread"], "response_required": ["chats", "resources"]},
+    "GET_CHAT_DATA": {"method": "GET", "origin": "https://chatik.hh.ru", "path": "/chatik/api/chat_data", "query_fields": ["chatId", "do_not_track_session_events"], "response_required": ["chat", "chatStates", "resources"]},
+    "SEND_CHAT_MESSAGE": {"method": "POST", "origin": "https://chatik.hh.ru", "path": "/chatik/api/send", "json_fields": ["chatId", "idempotencyKey", "text"], "response_required": ["chatId", "id"]},
+    "MARK_READ": {"method": "POST", "origin": "https://chatik.hh.ru", "path": "/chatik/api/mark_read", "json_fields": ["chatId", "hasUnreadDiscardMessage", "messageId"]}
+  },
+  "excluded": ["analytics", "fingerprint", "x-gib-*", "captcha tokens", "cookies", "raw headers"]
+}

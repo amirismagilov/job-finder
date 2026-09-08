@@ -20,12 +20,32 @@ queries = [
 ]
 
 [safety]
-daily_application_limit = 10
-daily_message_limit = 30
-minimum_read_interval_seconds = 0.8
-minimum_write_interval_seconds = 10.0
-confirmation_ttl_minutes = 15
+daily_application_limit = 5
+daily_message_limit = 20
+minimum_read_interval_seconds = 1.0
+minimum_write_interval_seconds = 30.0
 
 [hh]
-base_url = "https://api.hh.ru"
-user_agent = "amir-job-finder/0.1 (personal local assistant; https://im-iaa.ru/)"
+base_url = "https://hh.ru"
+chat_base_url = "https://chatik.hh.ru"
+user_agent = "amir-job-finder/0.2 (local browser bridge)"
+
+[bridge]
+host = "127.0.0.1"
+port = 8766
+command_timeout_seconds = 45
+max_request_bytes = 1100000
+max_response_bytes = 1000000
+
+[llm]
+# HTTP разрешён только для loopback. Для удалённого OpenAI-compatible endpoint нужен HTTPS.
+endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+model = "local-model"
+timeout_seconds = 60
+minimum_confidence = 0.75
+
+[autonomy]
+relevance_threshold = 75
+max_vacancies_per_cycle = 12
+chat_history_limit = 30
+cycle_interval_seconds = 300

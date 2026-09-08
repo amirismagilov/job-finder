@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amir-job-finder"
-version = "0.1.0"
-description = "Локальный безопасный MCP-помощник для поиска работы через официальный API hh.ru"
+version = "0.2.0"
+description = "Локальный автономный помощник hh.ru с ограниченным browser session bridge"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
