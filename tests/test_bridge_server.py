@@ -29,6 +29,30 @@ class BridgeServerTest(unittest.TestCase):
             self.assertFalse(self.server._authorized(self.handler(extension="ponmlkjihgfedcbaponmlkjihgfedcba")))
         self.assertTrue(any("extension_binding_mismatch" in line for line in captured.output))
 
+    def test_accepts_chrome_origin_with_terminal_slash_but_rejects_extra_path(self):
+        extension = "abcdefghijklmnopabcdefghijklmnop"
+        slash = self.handler(extension=extension)
+        slash.headers["Origin"] = "chrome-extension://" + extension + "/"
+        self.assertTrue(self.server._authorized(slash))
+        extra = self.handler(extension=extension)
+        extra.headers["Origin"] = "chrome-extension://" + extension + "/unexpected"
+        with self.assertLogs("job_finder.bridge_server", level=logging.WARNING) as captured:
+            self.assertFalse(self.server._authorized(extra))
+        self.assertTrue(any("origin_shape_mismatch" in line for line in captured.output))
+        malformed = self.handler(extension=extension)
+        malformed.headers["Origin"] = "chrome-extension://" + extension + ":invalid"
+        self.assertFalse(self.server._authorized(malformed))
+
+    def test_accepts_omitted_chrome_origin_but_rejects_null_origin(self):
+        missing = self.handler()
+        missing.headers.pop("Origin")
+        self.assertTrue(self.server._authorized(missing))
+        null = self.handler()
+        null.headers["Origin"] = "null"
+        with self.assertLogs("job_finder.bridge_server", level=logging.WARNING) as captured:
+            self.assertFalse(self.server._authorized(null))
+        self.assertTrue(any("origin_null" in line for line in captured.output))
+
     def test_auth_rejection_log_is_rate_limited_and_never_contains_secret(self):
         self.server.storage = SimpleNamespace(events=[], audit=lambda *args, **kwargs: self.server.storage.events.append((args, kwargs)))
         with self.assertLogs("job_finder.bridge_server", level=logging.WARNING) as captured:

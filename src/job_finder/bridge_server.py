@@ -7,7 +7,7 @@
 ## @input Pairing secret in Authorization and typed envelopes.
 ## @output Validated ResponseEnvelope.
 ## @invariants Loopback only; extension identity is bound on first successful poll; request bodies are bounded and never logged.
-## @changes LAST_CHANGE: [v0.2.3 — Added rate-limited, non-secret authentication rejection diagnostics.]
+## @changes LAST_CHANGE: [v0.2.5 — Supported Chrome's omitted extension Origin while retaining secret and ID binding.]
 ## @modulemap
 ## CLASS 10[Thread-safe one-shot command rendezvous] => BridgeQueue
 ## CLASS 10[Loopback transport and pairing boundary] => BrowserBridgeServer
@@ -155,14 +155,42 @@ class BrowserBridgeServer:
             return self._auth_rejected("secret_mismatch")
         if not EXTENSION_ID_RE.fullmatch(extension_id):
             return self._auth_rejected("extension_id_invalid")
-        if origin != f"chrome-extension://{extension_id}":
-            return self._auth_rejected("origin_mismatch")
+        if origin:
+            if origin == "null":
+                return self._auth_rejected("origin_null")
+            parsed_origin = urlparse(origin)
+            try:
+                origin_port = parsed_origin.port
+            except ValueError:
+                return self._auth_rejected("origin_shape_mismatch")
+            # BUG_FIX_CONTEXT: Chrome 150 omits Origin on privileged service-worker fetches.
+            # When present it remains strictly constrained; when absent the 256-bit bearer,
+            # extension-ID binding and browser-enforced CORS preflight remain mandatory.
+            if (
+                parsed_origin.scheme != "chrome-extension"
+                or parsed_origin.hostname != extension_id
+                or origin_port is not None
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.params
+                or parsed_origin.query
+                or parsed_origin.fragment
+            ):
+                if parsed_origin.scheme != "chrome-extension":
+                    return self._auth_rejected("origin_scheme_mismatch")
+                if parsed_origin.hostname != extension_id:
+                    return self._auth_rejected("origin_host_mismatch")
+                return self._auth_rejected("origin_shape_mismatch")
         bound = self.secrets.get("bridge_extension_id")
         if bound and not hmac.compare_digest(bound, extension_id):
             return self._auth_rejected("extension_binding_mismatch")
         if not bound:
             self.secrets.set("bridge_extension_id", extension_id)
+        first_connection = self._last_seen == 0.0
         self._last_seen = time.monotonic()
+        if first_connection:
+            logger.info("[IMP:8][BrowserBridgeServer][CONNECTED] Paired extension authenticated")
+            if self.storage:
+                self.storage.audit(8, "bridge_connected")
         return True
 
     def start(self) -> None:
