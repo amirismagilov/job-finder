@@ -2,21 +2,24 @@
 ## @file config.py
 ## @brief Validated local configuration without credentials.
 ## @modulecontract
-## @purpose Centralize conservative autonomy, bridge, search and LLM settings while rejecting unsafe network destinations.
+## @purpose Centralize conservative autonomy, bridge, search and LLM settings while rejecting unsafe provider configuration.
 ## @scope Local TOML parsing and immutable runtime settings.
 ## @input config.toml and JOB_FINDER_ROOT/JOB_FINDER_CONFIG paths.
 ## @output Config value object.
-## @invariants No secret is read from TOML; bridge is fixed to 127.0.0.1:8766; non-loopback LLM uses HTTPS; optional reasoning effort is allowlisted.
-## @changes LAST_CHANGE: [v0.2.2 — Added validated optional reasoning effort without changing provider-neutral defaults.]
+## @invariants No secret is read from TOML; bridge is fixed to 127.0.0.1:8766; HTTP LLM uses safe transport; Codex CLI uses an absolute executable and allowlisted settings.
+## @changes LAST_CHANGE: [v0.3.0 — Added validated HTTP/Codex CLI provider selection and bounded provider-specific timeouts.]
 ## @modulemap
 ## CLASS 10[Complete validated runtime settings] => Config
+## FUNC 9[Validates explicit LLM provider selection] => _validate_llm_provider
+## FUNC 9[Validates absolute Codex CLI executable] => _validate_cli_executable
+## FUNC 8[Validates Codex CLI model token] => _validate_cli_model
 ## FUNC 9[Validates optional provider reasoning capability] => _validate_reasoning_effort
 ## FUNC 9[Loads and validates local TOML] => load_config
 def _module_contract() -> None:
     pass
 # endregion MODULE_CONTRACT
-# GREP_SUMMARY: config, TOML, bridge, autonomy, LLM, safety limits, allowlist
-# STRUCTURE: TOML -> typed sections -> safety clamps -> endpoint validation -> immutable Config
+# GREP_SUMMARY: config, TOML, bridge, autonomy, LLM provider, Codex CLI, safety limits, allowlist
+# STRUCTURE: TOML -> typed sections -> safety clamps -> provider-specific validation -> immutable Config
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +75,8 @@ class LLMConfig:
     timeout_seconds: float = 60.0
     minimum_confidence: float = 0.75
     reasoning_effort: str | None = None
+    provider: str = "http"
+    codex_executable: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -124,7 +129,21 @@ def _validate_llm_endpoint(value: str) -> str:
 # endregion FUNC_validate_llm_endpoint
 
 
+LLM_PROVIDERS = frozenset({"http", "codex_cli"})
 REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh", "max"})
+CODEX_MODEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._")
+
+
+# region FUNC_validate_llm_provider [DOMAIN(8): Configuration; CONCEPT(10): ExplicitTransport; TECH(8): Allowlist]
+## @purpose Prevent an unrecognized transport from inheriting HTTP or subprocess privileges.
+## @io Any -> http|codex_cli
+## @complexity 2
+def _validate_llm_provider(value: object) -> str:
+    provider = str(value).strip().lower()
+    if provider not in LLM_PROVIDERS:
+        raise RuntimeError("LLM provider должен быть http или codex_cli")
+    return provider
+# endregion FUNC_validate_llm_provider
 
 
 # region FUNC_validate_reasoning_effort [DOMAIN(8): Configuration; CONCEPT(9): ProviderCapability; TECH(8): Allowlist]
@@ -142,6 +161,34 @@ def _validate_reasoning_effort(value: object) -> str | None:
 # endregion FUNC_validate_reasoning_effort
 
 
+# region FUNC_validate_cli_executable [DOMAIN(9): Security; CONCEPT(10): FixedExecutable; TECH(8): FilesystemValidation]
+## @purpose Ensure Codex CLI is selected by one explicit executable path rather than PATH lookup or shell parsing.
+## @io provider, Any|None -> Path|None
+## @complexity 4
+def _validate_cli_executable(provider: str, value: object | None) -> Path | None:
+    if provider != "codex_cli":
+        return None
+    if value is None:
+        raise RuntimeError("Для provider=codex_cli требуется codex_executable")
+    executable = Path(str(value))
+    if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
+        raise RuntimeError("codex_executable должен быть абсолютным путём к исполняемому файлу")
+    return executable
+# endregion FUNC_validate_cli_executable
+
+
+# region FUNC_validate_cli_model [DOMAIN(8): Security; CONCEPT(9): FixedArgvValue; TECH(8): CharacterAllowlist]
+## @purpose Keep the model argv value bounded and free of option/control characters in Codex CLI mode.
+## @io provider, Any -> str
+## @complexity 3
+def _validate_cli_model(provider: str, value: object) -> str:
+    model = str(value).strip()
+    if provider == "codex_cli" and (not model or len(model) > 128 or any(char not in CODEX_MODEL_CHARS for char in model)):
+        raise RuntimeError("Некорректная модель для provider=codex_cli")
+    return model
+# endregion FUNC_validate_cli_model
+
+
 # region FUNC_load_config [DOMAIN(9): JobAutomation; CONCEPT(9): SafeDefaults; TECH(8): TOML]
 ## @purpose Build one validated configuration whose defaults cannot silently enable unsafe writes.
 ## @io Path|None -> Config
@@ -156,6 +203,11 @@ def load_config(path: Path | None = None) -> Config:
     profile, search = raw.get("profile", {}), raw.get("search", {})
     safety, bridge = raw.get("safety", {}), raw.get("bridge", {})
     llm, autonomy, hh = raw.get("llm", {}), raw.get("autonomy", {}), raw.get("hh", {})
+    llm_provider = _validate_llm_provider(llm.get("provider", "http"))
+    reasoning_effort = _validate_reasoning_effort(llm.get("reasoning_effort"))
+    if llm_provider == "codex_cli" and reasoning_effort is None:
+        raise RuntimeError("Для provider=codex_cli требуется reasoning_effort")
+    llm_timeout = float(llm.get("timeout_seconds", 300 if llm_provider == "codex_cli" else 60))
     bridge_host, bridge_port = str(bridge.get("host", "127.0.0.1")), int(bridge.get("port", 8766))
     if bridge_host != "127.0.0.1" or bridge_port != 8766:
         raise RuntimeError("Bridge разрешён только на 127.0.0.1:8766")
@@ -171,12 +223,14 @@ def load_config(path: Path | None = None) -> Config:
         hh=HHConfig(hh_base, str(hh.get("user_agent", "amir-job-finder/0.2 (local browser bridge)")), chat_base),
         bridge=BridgeConfig(bridge_host, bridge_port, max(35.0, min(float(bridge.get("command_timeout_seconds", 45)), 120.0)), max(1024, min(int(bridge.get("max_request_bytes", 1_100_000)), 2_000_000)), max(1024, min(int(bridge.get("max_response_bytes", 1_000_000)), 1_000_000))),
         llm=LLMConfig(
-            endpoint=_validate_llm_endpoint(str(llm.get("endpoint", "http://127.0.0.1:11434/v1/chat/completions"))),
-            model=str(llm.get("model", "local-model")),
+            endpoint=_validate_llm_endpoint(str(llm.get("endpoint", "http://127.0.0.1:11434/v1/chat/completions"))) if llm_provider == "http" else "",
+            model=_validate_cli_model(llm_provider, llm.get("model", "local-model")),
             api_key_account="llm_api_key",
-            timeout_seconds=max(5.0, min(float(llm.get("timeout_seconds", 60)), 180.0)),
+            timeout_seconds=max(30.0, min(llm_timeout, 600.0)) if llm_provider == "codex_cli" else max(5.0, min(llm_timeout, 180.0)),
             minimum_confidence=max(0.5, min(float(llm.get("minimum_confidence", 0.75)), 1.0)),
-            reasoning_effort=_validate_reasoning_effort(llm.get("reasoning_effort")),
+            reasoning_effort=reasoning_effort,
+            provider=llm_provider,
+            codex_executable=_validate_cli_executable(llm_provider, llm.get("codex_executable")),
         ),
         autonomy=AutonomyConfig(max(0, min(int(autonomy.get("relevance_threshold", 75)), 100)), max(1, min(int(autonomy.get("max_vacancies_per_cycle", 12)), 50)), max(5, min(int(autonomy.get("chat_history_limit", 30)), 50)), max(60, int(autonomy.get("cycle_interval_seconds", 300)))),
     )

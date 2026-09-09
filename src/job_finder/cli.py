@@ -4,10 +4,10 @@
 ## @modulecontract
 ## @purpose Let the user configure and operate the agent without placing any secret in argv, config or logs.
 ## @scope CLI parsing, lifecycle and LaunchAgent installation.
-## @input Hidden pairing/LLM secret and explicit consent phrases.
+## @input Hidden pairing/HTTP-provider secret and explicit consent phrases.
 ## @output Non-secret JSON status/reports.
-## @invariants Dry-run is the run-once default; autonomous writes require stored opt-in; secrets are accepted only by getpass.
-## @changes LAST_CHANGE: [v0.2.1 — Re-pairing now deletes a stale extension binding instead of storing an empty secret.]
+## @invariants Dry-run is the run-once default; autonomous writes require stored opt-in; optional HTTP API keys are accepted only by getpass.
+## @changes LAST_CHANGE: [v0.3.0 — Clarified that Keychain API-key setup applies only to the optional HTTP provider.]
 ## @modulemap
 ## FUNC 10[Defines local control surface] => build_parser
 ## FUNC 10[Dispatches safe runtime commands] => main
@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     llm = sub.add_parser("llm", help="Настройка AI provider")
     llm_sub = llm.add_subparsers(dest="llm_command", required=True)
-    llm_sub.add_parser("set-key", help="Сохранить API key в Keychain через скрытый ввод; локальной модели ключ не нужен")
+    llm_sub.add_parser("set-key", help="Сохранить ключ HTTP LLM provider в Keychain через скрытый ввод; codex_cli ключ не требует")
 
     autonomy = sub.add_parser("autonomy", help="Однократное включение/отключение автономных записей")
     autonomy_sub = autonomy.add_subparsers(dest="autonomy_command", required=True)
@@ -124,7 +124,7 @@ def main() -> None:
         _pair(store)
         return
     if args.command == "llm" and args.llm_command == "set-key":
-        value = getpass("LLM API key (ввод скрыт): ").strip()
+        value = getpass("HTTP LLM API key (ввод скрыт): ").strip()
         if not value:
             raise SystemExit("Пустой ключ не сохранён")
         store.set("llm_api_key", value)

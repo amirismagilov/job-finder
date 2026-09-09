@@ -17,7 +17,7 @@ SQLite audit ← semantic result ← loopback bridge ← Chromium extension
 ```
 
 - Backend принимает только `WebAction` и точные схемы параметров — передать URL, метод или заголовки невозможно.
-- Pairing secret и ключ LLM хранятся в macOS Keychain; session Cookie и CSRF остаются в браузере.
+- Pairing secret и необязательный ключ HTTP LLM provider хранятся в macOS Keychain; авторизацией `codex_cli` управляет сам Codex, а session Cookie и CSRF остаются в браузере.
 - SQLite имеет права `0600`, хранит opt-in, hard stop, атомарные write-reservations, идемпотентный chat outbox, дедупликацию и аудит.
 - По умолчанию разрешено не более 5 откликов и 20 сообщений в сутки, между любыми записями — минимум 30 секунд.
 - Непосредственно перед каждой записью SQLite-транзакция заново проверяет opt-in, hard stop, суточный лимит и интервал, поэтому `autonomy disable` останавливает ещё не начатые write-действия текущего цикла.
@@ -36,18 +36,21 @@ python3 -m venv --system-site-packages .venv
 
 Локальный `config.toml` указывает на три базы знаний в `/Users/macos/Downloads`. Файлы читаются динамически и не копируются в проект. Проверьте секции `[search]`, `[llm]` и `[autonomy]` по [config.example.toml](config.example.toml).
 
-Для локального OpenAI-compatible сервера оставьте loopback endpoint и не задавайте `reasoning_effort`: запрос сохранит совместимый режим `temperature=0.1`. Для официального OpenAI API используйте Chat Completions endpoint и выбранные модель/глубину reasoning:
+Основной локальный профиль использует уже авторизованный Codex CLI без Platform API key. Один раз выполните интерактивный `codex login`, выберите вход через ChatGPT и укажите абсолютный путь к установленному CLI:
 
 ```toml
 [llm]
-endpoint = "https://api.openai.com/v1/chat/completions"
+provider = "codex_cli"
+codex_executable = "/Users/macos/.npm-global/bin/codex"
 model = "gpt-5.6-sol"
 reasoning_effort = "xhigh"
-timeout_seconds = 180
+timeout_seconds = 300
 minimum_confidence = 0.75
 ```
 
-Удалённому провайдеру разрешён только HTTPS. Используется отдельный Platform API key; авторизация Codex не переиспользуется. Ключ вводится скрыто и сохраняется только в macOS Keychain:
+Каждая задача запускается отдельным эфемерным процессом в приватном временном каталоге. Prompt передаётся только через stdin; пользовательские настройки и правила отключены, shell/unified exec, web и apps недоступны, sandbox остаётся read-only. Временные schema/result файлы удаляются после вызова. Такой режим имеет больший latency/token overhead, но не читает и не копирует секрет авторизации Codex.
+
+HTTP остаётся явной совместимой альтернативой. Для локального OpenAI-compatible сервера используйте `provider = "http"`, loopback endpoint и не задавайте `reasoning_effort`: запрос сохранит `temperature=0.1`. Для удалённого HTTP provider разрешён только HTTPS, а отдельный API key вводится скрыто и сохраняется в macOS Keychain:
 
 ```bash
 .venv/bin/job-finder llm set-key

@@ -38,7 +38,8 @@ max_request_bytes = 1100000
 max_response_bytes = 1000000
 
 [llm]
-# HTTP разрешён только для loopback. Для удалённого OpenAI-compatible endpoint нужен HTTPS.
+# Provider-neutral HTTP mode. HTTP разрешён только для loopback; удалённый endpoint обязан использовать HTTPS.
+provider = "http"
 endpoint = "http://127.0.0.1:11434/v1/chat/completions"
 model = "local-model"
 # Опционально для reasoning-моделей: none, low, medium, high, xhigh или max.
@@ -46,6 +47,13 @@ model = "local-model"
 # reasoning_effort = "xhigh"
 timeout_seconds = 60
 minimum_confidence = 0.75
+
+# Альтернатива без Platform API key: замените секцию выше следующими значениями.
+# provider = "codex_cli"
+# codex_executable = "/absolute/path/to/codex"
+# model = "gpt-5.6-sol"
+# reasoning_effort = "xhigh"
+# timeout_seconds = 300
 
 [autonomy]
 relevance_threshold = 75
