@@ -6,8 +6,8 @@
 ## @scope OpenAI-compatible chat completions, strict result parsing and grounding checks.
 ## @input Sanitized vacancy/chat excerpts and selected knowledge chunks.
 ## @output RelevanceDecision or GeneratedText.
-## @invariants Secrets, transport commands, snake_case/camelCase identifiers and URLs are removed before model calls; unsupported claims fail validation.
-## @changes LAST_CHANGE: [v0.2.1 — Closed identifier leaks for exact id and camelCase chat/vacancy/message fields.]
+## @invariants Secrets, transport commands, snake_case/camelCase identifiers and URLs are removed before model calls; reasoning and sampling are never mixed; unsupported claims fail validation.
+## @changes LAST_CHANGE: [v0.2.2 — Added optional Chat Completions reasoning effort while retaining legacy local-provider sampling.]
 ## @modulemap
 ## CLASS 9[Structured relevance result] => RelevanceDecision
 ## CLASS 9[Structured generated text result] => GeneratedText
@@ -17,8 +17,8 @@
 def _module_contract() -> None:
     pass
 # endregion MODULE_CONTRACT
-# GREP_SUMMARY: LLM, OpenAI compatible, structured JSON, grounded, unsupported claims, Sber confidentiality
-# STRUCTURE: sanitized context -> strict prompt -> JSON parse -> typed result -> grounding validator
+# GREP_SUMMARY: LLM, OpenAI compatible, structured JSON, reasoning effort, grounded, unsupported claims, Sber confidentiality
+# STRUCTURE: sanitized context -> provider-compatible request settings -> strict prompt -> JSON parse -> typed result -> grounding validator
 
 from dataclasses import dataclass
 import json
@@ -153,15 +153,18 @@ class LLMProvider:
             "метрики, даты или обязательства. ИИ не управляет сетью и не предлагает HTTP-действия. "
             f"Задача: {task}. Верни только JSON. Обязательные поля: {required}."
         )
-        body = {
+        body: dict[str, Any] = {
             "model": self.config.model,
-            "temperature": 0.1,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(safe_context, ensure_ascii=False)},
             ],
         }
+        if self.config.reasoning_effort is None:
+            body["temperature"] = 0.1
+        else:
+            body["reasoning_effort"] = self.config.reasoning_effort
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         key = self.secrets.get(self.config.api_key_account)
         if key:

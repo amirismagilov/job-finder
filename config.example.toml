@@ -41,6 +41,9 @@ max_response_bytes = 1000000
 # HTTP разрешён только для loopback. Для удалённого OpenAI-compatible endpoint нужен HTTPS.
 endpoint = "http://127.0.0.1:11434/v1/chat/completions"
 model = "local-model"
+# Опционально для reasoning-моделей: none, low, medium, high, xhigh или max.
+# Если параметр не задан, сохраняется совместимый с локальными провайдерами режим temperature=0.1.
+# reasoning_effort = "xhigh"
 timeout_seconds = 60
 minimum_confidence = 0.75
 

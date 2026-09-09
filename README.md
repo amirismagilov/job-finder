@@ -36,7 +36,18 @@ python3 -m venv --system-site-packages .venv
 
 Локальный `config.toml` указывает на три базы знаний в `/Users/macos/Downloads`. Файлы читаются динамически и не копируются в проект. Проверьте секции `[search]`, `[llm]` и `[autonomy]` по [config.example.toml](config.example.toml).
 
-Для локального OpenAI-compatible сервера оставьте loopback endpoint. Для удалённого провайдера разрешён только HTTPS, а ключ вводится скрыто:
+Для локального OpenAI-compatible сервера оставьте loopback endpoint и не задавайте `reasoning_effort`: запрос сохранит совместимый режим `temperature=0.1`. Для официального OpenAI API используйте Chat Completions endpoint и выбранные модель/глубину reasoning:
+
+```toml
+[llm]
+endpoint = "https://api.openai.com/v1/chat/completions"
+model = "gpt-5.6-sol"
+reasoning_effort = "xhigh"
+timeout_seconds = 180
+minimum_confidence = 0.75
+```
+
+Удалённому провайдеру разрешён только HTTPS. Используется отдельный Platform API key; авторизация Codex не переиспользуется. Ключ вводится скрыто и сохраняется только в macOS Keychain:
 
 ```bash
 .venv/bin/job-finder llm set-key

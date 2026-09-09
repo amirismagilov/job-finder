@@ -6,10 +6,11 @@
 ## @scope Local TOML parsing and immutable runtime settings.
 ## @input config.toml and JOB_FINDER_ROOT/JOB_FINDER_CONFIG paths.
 ## @output Config value object.
-## @invariants No secret is read from TOML; bridge is fixed to 127.0.0.1:8766; non-loopback LLM uses HTTPS.
-## @changes LAST_CHANGE: [v0.2.0 — Replaced applicant OAuth API settings with browser bridge and LLM/autonomy policies.]
+## @invariants No secret is read from TOML; bridge is fixed to 127.0.0.1:8766; non-loopback LLM uses HTTPS; optional reasoning effort is allowlisted.
+## @changes LAST_CHANGE: [v0.2.2 — Added validated optional reasoning effort without changing provider-neutral defaults.]
 ## @modulemap
 ## CLASS 10[Complete validated runtime settings] => Config
+## FUNC 9[Validates optional provider reasoning capability] => _validate_reasoning_effort
 ## FUNC 9[Loads and validates local TOML] => load_config
 def _module_contract() -> None:
     pass
@@ -70,6 +71,7 @@ class LLMConfig:
     api_key_account: str = "llm_api_key"
     timeout_seconds: float = 60.0
     minimum_confidence: float = 0.75
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,24 @@ def _validate_llm_endpoint(value: str) -> str:
 # endregion FUNC_validate_llm_endpoint
 
 
+REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh", "max"})
+
+
+# region FUNC_validate_reasoning_effort [DOMAIN(8): Configuration; CONCEPT(9): ProviderCapability; TECH(8): Allowlist]
+## @purpose Accept only known Chat Completions reasoning effort values while preserving omission for local providers.
+## @io Any|None -> str|None
+## @complexity 3
+def _validate_reasoning_effort(value: object) -> str | None:
+    if value is None:
+        return None
+    effort = str(value).strip().lower()
+    if effort not in REASONING_EFFORTS:
+        allowed = ", ".join(sorted(REASONING_EFFORTS))
+        raise RuntimeError(f"Некорректный reasoning_effort; разрешены: {allowed}")
+    return effort
+# endregion FUNC_validate_reasoning_effort
+
+
 # region FUNC_load_config [DOMAIN(9): JobAutomation; CONCEPT(9): SafeDefaults; TECH(8): TOML]
 ## @purpose Build one validated configuration whose defaults cannot silently enable unsafe writes.
 ## @io Path|None -> Config
@@ -150,7 +170,14 @@ def load_config(path: Path | None = None) -> Config:
         safety=SafetyConfig(max(1, min(int(safety.get("daily_application_limit", 5)), 20)), max(1, min(int(safety.get("daily_message_limit", 20)), 100)), max(0.5, float(safety.get("minimum_read_interval_seconds", 1.0))), max(30.0, float(safety.get("minimum_write_interval_seconds", 30.0)))),
         hh=HHConfig(hh_base, str(hh.get("user_agent", "amir-job-finder/0.2 (local browser bridge)")), chat_base),
         bridge=BridgeConfig(bridge_host, bridge_port, max(35.0, min(float(bridge.get("command_timeout_seconds", 45)), 120.0)), max(1024, min(int(bridge.get("max_request_bytes", 1_100_000)), 2_000_000)), max(1024, min(int(bridge.get("max_response_bytes", 1_000_000)), 1_000_000))),
-        llm=LLMConfig(_validate_llm_endpoint(str(llm.get("endpoint", "http://127.0.0.1:11434/v1/chat/completions"))), str(llm.get("model", "local-model")), "llm_api_key", max(5.0, min(float(llm.get("timeout_seconds", 60)), 180.0)), max(0.5, min(float(llm.get("minimum_confidence", 0.75)), 1.0))),
+        llm=LLMConfig(
+            endpoint=_validate_llm_endpoint(str(llm.get("endpoint", "http://127.0.0.1:11434/v1/chat/completions"))),
+            model=str(llm.get("model", "local-model")),
+            api_key_account="llm_api_key",
+            timeout_seconds=max(5.0, min(float(llm.get("timeout_seconds", 60)), 180.0)),
+            minimum_confidence=max(0.5, min(float(llm.get("minimum_confidence", 0.75)), 1.0)),
+            reasoning_effort=_validate_reasoning_effort(llm.get("reasoning_effort")),
+        ),
         autonomy=AutonomyConfig(max(0, min(int(autonomy.get("relevance_threshold", 75)), 100)), max(1, min(int(autonomy.get("max_vacancies_per_cycle", 12)), 50)), max(5, min(int(autonomy.get("chat_history_limit", 30)), 50)), max(60, int(autonomy.get("cycle_interval_seconds", 300)))),
     )
     if not cfg.search.queries:
