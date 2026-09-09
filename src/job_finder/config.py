@@ -7,9 +7,11 @@
 ## @input config.toml and JOB_FINDER_ROOT/JOB_FINDER_CONFIG paths.
 ## @output Config value object.
 ## @invariants No secret is read from TOML; bridge is fixed to 127.0.0.1:8766; HTTP LLM uses safe transport; Codex CLI uses an absolute executable and allowlisted settings.
-## @changes LAST_CHANGE: [v0.3.0 — Added validated HTTP/Codex CLI provider selection and bounded provider-specific timeouts.]
+## @changes LAST_CHANGE: [v0.3.1 — Added mandatory bounded employer/industry exclusions before any AI vacancy processing.]
 ## @modulemap
 ## CLASS 10[Complete validated runtime settings] => Config
+## CLASS 9[Search queries and immutable exclusion policy] => SearchConfig
+## FUNC 9[Validates and extends mandatory exclusion terms] => _validate_exclusion_terms
 ## FUNC 9[Validates explicit LLM provider selection] => _validate_llm_provider
 ## FUNC 9[Validates absolute Codex CLI executable] => _validate_cli_executable
 ## FUNC 8[Validates Codex CLI model token] => _validate_cli_model
@@ -18,14 +20,58 @@
 def _module_contract() -> None:
     pass
 # endregion MODULE_CONTRACT
-# GREP_SUMMARY: config, TOML, bridge, autonomy, LLM provider, Codex CLI, safety limits, allowlist
-# STRUCTURE: TOML -> typed sections -> safety clamps -> provider-specific validation -> immutable Config
+# GREP_SUMMARY: config, TOML, search exclusions, bridge, autonomy, LLM provider, Codex CLI, safety limits, allowlist
+# STRUCTURE: TOML -> typed sections + mandatory exclusions -> safety clamps -> provider-specific validation -> immutable Config
 
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
 import tomllib
+import unicodedata
 from urllib.parse import urlparse
+
+
+DEFAULT_EXCLUDED_EMPLOYER_TERMS = ("сбер", "sber", "яндекс", "yandex")
+DEFAULT_EXCLUDED_INDUSTRY_TERMS = (
+    "букмекер",
+    "беттинг",
+    "bookmaker",
+    "betting",
+    "gambling",
+    "igaming",
+    "казино",
+    "ставки на спорт",
+    "азартные игры",
+    "sportsbook",
+    "fonbet",
+    "фонбет",
+    "betboom",
+    "бетбум",
+    "winline",
+    "винлайн",
+    "лига ставок",
+    "pari",
+    "parimatch",
+    "париматч",
+    "1xbet",
+    "1xставка",
+    "betcity",
+    "бетсити",
+    "olimpbet",
+    "олимпбет",
+    "marathonbet",
+    "melbet",
+    "мелбет",
+    "mostbet",
+    "мостбет",
+    "tennisi",
+    "тенниси",
+    "baltbet",
+    "балтбет",
+    "legalbet",
+)
+MAX_EXCLUSION_TERMS = 100
+MAX_EXCLUSION_TERM_LENGTH = 100
 
 
 @dataclass(frozen=True)
@@ -40,6 +86,8 @@ class SearchConfig:
     days: int
     per_query: int
     queries: tuple[str, ...]
+    excluded_employer_terms: tuple[str, ...] = DEFAULT_EXCLUDED_EMPLOYER_TERMS
+    excluded_industry_terms: tuple[str, ...] = DEFAULT_EXCLUDED_INDUSTRY_TERMS
 
 
 @dataclass(frozen=True)
@@ -189,6 +237,49 @@ def _validate_cli_model(provider: str, value: object) -> str:
 # endregion FUNC_validate_cli_model
 
 
+# region FUNC_validate_exclusion_terms [DOMAIN(10): Safety; CONCEPT(10): MandatoryPolicy; TECH(8): TOMLValidation]
+## @purpose Merge user additions into mandatory exclusions while rejecting ambiguous or dangerously broad terms.
+## @io Any|None, defaults, field -> tuple[str,...] or RuntimeError
+## @complexity 5
+def _validate_exclusion_terms(
+    value: object | None,
+    defaults: tuple[str, ...],
+    field_name: str,
+    *,
+    forbidden_exact: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    if value is None:
+        configured: list[object] = []
+    elif isinstance(value, list):
+        configured = value
+    else:
+        raise RuntimeError(f"search.{field_name} должен быть TOML-массивом строк")
+    if len(configured) > MAX_EXCLUSION_TERMS:
+        raise RuntimeError(f"search.{field_name} содержит слишком много элементов")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in (*defaults, *configured):
+        if not isinstance(item, str):
+            raise RuntimeError(f"search.{field_name} должен содержать только строки")
+        term = item.strip()
+        if not term or len(term) > MAX_EXCLUSION_TERM_LENGTH:
+            raise RuntimeError(f"search.{field_name} содержит пустой или слишком длинный элемент")
+        unicode_normalized = unicodedata.normalize("NFKC", term).casefold().replace("ё", "е")
+        normalized = " ".join("".join(char if char.isalnum() else " " for char in unicode_normalized).split())
+        if not normalized:
+            raise RuntimeError(f"search.{field_name} содержит элемент без букв или цифр")
+        if normalized in forbidden_exact:
+            raise RuntimeError(f"search.{field_name} содержит опасно широкий маркер {term!r}")
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(term)
+    if len(result) > MAX_EXCLUSION_TERMS:
+        raise RuntimeError(f"search.{field_name} содержит слишком много уникальных элементов")
+    return tuple(result)
+# endregion FUNC_validate_exclusion_terms
+
+
 # region FUNC_load_config [DOMAIN(9): JobAutomation; CONCEPT(9): SafeDefaults; TECH(8): TOML]
 ## @purpose Build one validated configuration whose defaults cannot silently enable unsafe writes.
 ## @io Path|None -> Config
@@ -208,6 +299,17 @@ def load_config(path: Path | None = None) -> Config:
     if llm_provider == "codex_cli" and reasoning_effort is None:
         raise RuntimeError("Для provider=codex_cli требуется reasoning_effort")
     llm_timeout = float(llm.get("timeout_seconds", 300 if llm_provider == "codex_cli" else 60))
+    excluded_employers = _validate_exclusion_terms(
+        search.get("excluded_employer_terms"),
+        DEFAULT_EXCLUDED_EMPLOYER_TERMS,
+        "excluded_employer_terms",
+    )
+    excluded_industries = _validate_exclusion_terms(
+        search.get("excluded_industry_terms"),
+        DEFAULT_EXCLUDED_INDUSTRY_TERMS,
+        "excluded_industry_terms",
+        forbidden_exact=frozenset({"bet"}),
+    )
     bridge_host, bridge_port = str(bridge.get("host", "127.0.0.1")), int(bridge.get("port", 8766))
     if bridge_host != "127.0.0.1" or bridge_port != 8766:
         raise RuntimeError("Bridge разрешён только на 127.0.0.1:8766")
@@ -218,7 +320,14 @@ def load_config(path: Path | None = None) -> Config:
     cfg = Config(
         root=root,
         profile=ProfileConfig(tuple(Path(p).expanduser() for p in profile.get("knowledge_paths", [])), Path(profile.get("cover_letter_rules_path", "")).expanduser()),
-        search=SearchConfig(str(search.get("area", "1")), max(1, min(int(search.get("days", 14)), 30)), max(1, min(int(search.get("per_query", 10)), 20)), tuple(str(q).strip() for q in search.get("queries", []) if str(q).strip())),
+        search=SearchConfig(
+            str(search.get("area", "1")),
+            max(1, min(int(search.get("days", 14)), 30)),
+            max(1, min(int(search.get("per_query", 10)), 20)),
+            tuple(str(q).strip() for q in search.get("queries", []) if str(q).strip()),
+            excluded_employers,
+            excluded_industries,
+        ),
         safety=SafetyConfig(max(1, min(int(safety.get("daily_application_limit", 5)), 20)), max(1, min(int(safety.get("daily_message_limit", 20)), 100)), max(0.5, float(safety.get("minimum_read_interval_seconds", 1.0))), max(30.0, float(safety.get("minimum_write_interval_seconds", 30.0)))),
         hh=HHConfig(hh_base, str(hh.get("user_agent", "amir-job-finder/0.2 (local browser bridge)")), chat_base),
         bridge=BridgeConfig(bridge_host, bridge_port, max(35.0, min(float(bridge.get("command_timeout_seconds", 45)), 120.0)), max(1024, min(int(bridge.get("max_request_bytes", 1_100_000)), 2_000_000)), max(1024, min(int(bridge.get("max_response_bytes", 1_000_000)), 1_000_000))),

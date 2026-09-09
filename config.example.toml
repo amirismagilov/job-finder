@@ -18,6 +18,17 @@ queries = [
   "Product Owner FinTech",
   "Консультант цифровая трансформация AI",
 ]
+# Эти списки расширяют встроенные обязательные исключения, но не могут отключить их.
+excluded_employer_terms = ["сбер", "sber", "яндекс", "yandex"]
+excluded_industry_terms = [
+  "букмекер", "беттинг", "bookmaker", "betting", "gambling", "igaming", "казино",
+  "ставки на спорт", "азартные игры", "sportsbook",
+  "fonbet", "фонбет", "betboom", "бетбум", "winline", "винлайн",
+  "лига ставок", "pari", "parimatch", "париматч", "1xbet", "1xставка",
+  "betcity", "бетсити", "olimpbet", "олимпбет", "marathonbet",
+  "melbet", "мелбет", "mostbet", "мостбет", "tennisi", "тенниси",
+  "baltbet", "балтбет", "legalbet",
+]
 
 [safety]
 daily_application_limit = 5

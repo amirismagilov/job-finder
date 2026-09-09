@@ -1,8 +1,9 @@
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
-from job_finder.autonomy import AutonomousWorker
+from job_finder.autonomy import AutonomousWorker, _vacancy_exclusion_reason
 from job_finder.bridge_server import BridgeError
 from job_finder.config import AutonomyConfig, BridgeConfig, Config, HHConfig, LLMConfig, ProfileConfig, SafetyConfig, SearchConfig
 from job_finder.knowledge import KnowledgeBase
@@ -61,6 +62,51 @@ class FakeLLM:
         return GeneratedText("Более 10 лет управляю ИТ-проектами; внедрял LLM и RAG.", 0.95, ("10 лет управляю ИТ-проектами", "внедрял LLM и RAG"), (), (), True)
 
 
+class ExclusionClient(FakeClient):
+    def __init__(self, vacancy):
+        super().__init__(with_chat=False)
+        self.vacancy = vacancy
+        self.preflight_calls = 0
+
+    def search_vacancies(self, **_kwargs):
+        return {"items": [{"id": self.vacancy["id"], "name": self.vacancy["name"]}]}
+
+    def get_vacancy(self, vacancy_id):
+        return dict(self.vacancy, id=vacancy_id)
+
+    def application_preflight(self, vacancy_id):
+        self.preflight_calls += 1
+        return super().application_preflight(vacancy_id)
+
+
+class CountingLLM(FakeLLM):
+    def __init__(self):
+        self.relevance_calls = 0
+        self.cover_calls = 0
+
+    def assess_relevance(self, vacancy, knowledge):
+        self.relevance_calls += 1
+        return super().assess_relevance(vacancy, knowledge)
+
+    def generate_cover_letter(self, vacancy, knowledge, rules):
+        self.cover_calls += 1
+        return super().generate_cover_letter(vacancy, knowledge, rules)
+
+
+class CountingKnowledge:
+    def __init__(self):
+        self.retrieve_calls = 0
+        self.rules_calls = 0
+
+    def retrieve(self, *_args, **_kwargs):
+        self.retrieve_calls += 1
+        return []
+
+    def cover_letter_rules(self):
+        self.rules_calls += 1
+        return ""
+
+
 def make_config(root, knowledge, rules, *, app_limit=5):
     return Config(
         root, ProfileConfig((knowledge,), rules), SearchConfig("1", 14, 10, ("AI Lead",)),
@@ -86,6 +132,22 @@ class AutonomyTest(unittest.TestCase):
         cfg = config or self.config
         return AutonomousWorker(cfg, client or FakeClient(), llm or FakeLLM(), self.storage, KnowledgeBase(cfg.profile))
 
+    def run_excluded(self, vacancy, reason):
+        client = ExclusionClient(vacancy)
+        llm = CountingLLM()
+        knowledge = CountingKnowledge()
+        self.storage.set_autonomy(True)
+        report = AutonomousWorker(self.config, client, llm, self.storage, knowledge).run_cycle(dry_run=False)
+        self.assertFalse(report.dry_run)
+        self.assertEqual(report.skipped.get(reason), 1)
+        self.assertEqual(report.assessed, 0)
+        self.assertEqual(self.storage.vacancy_status(vacancy["id"]), "ineligible")
+        self.assertEqual((knowledge.retrieve_calls, knowledge.rules_calls), (0, 0))
+        self.assertEqual((llm.relevance_calls, llm.cover_calls), (0, 0))
+        self.assertEqual(client.preflight_calls, 0)
+        self.assertEqual(client.applications, [])
+        return report
+
     def test_full_live_path_and_second_cycle_deduplicates(self):
         client = FakeClient()
         self.storage.set_autonomy(True)
@@ -102,6 +164,51 @@ class AutonomyTest(unittest.TestCase):
         self.assertTrue(report.dry_run)
         self.assertEqual(client.applications, [])
         self.assertEqual(client.sent_messages, [])
+
+    def test_employer_ecosystems_are_terminal_before_knowledge_and_ai(self):
+        employers = ("СБЕРБАНК", "СБЁР-Тех", "SberTech", "ЯНДЕКС.Маркет", "Yandex Cloud")
+        for index, employer in enumerate(employers):
+            with self.subTest(employer=employer):
+                self.run_excluded(
+                    {"id": f"vacancy-employer-{index}", "name": "AI Lead", "description": "Управление LLM", "employer": {"name": employer}},
+                    "excluded_employer",
+                )
+
+    def test_betting_markers_in_employer_title_or_description_are_terminal(self):
+        vacancies = (
+            {"id": "vacancy-betting-0", "name": "AI Lead", "description": "Управление продуктом", "employer": {"name": "FONBET"}},
+            {"id": "vacancy-betting-1", "name": "Менеджер букмекерской платформы", "description": "Управление продуктом", "employer": {"name": "Компания"}},
+            {"id": "vacancy-betting-2", "name": "AI Lead", "description": "Развитие betting-платформы", "employer": {"name": "Компания"}},
+            {"id": "vacancy-betting-3", "name": "Product Lead", "description": "Развитие gambling и онлайн-казино", "employer": {"name": "Компания"}},
+            {"id": "vacancy-betting-4", "name": "AI Lead", "description": "Управление продуктом", "employer": {"name": "MOSTBET"}},
+        )
+        for vacancy in vacancies:
+            with self.subTest(vacancy_id=vacancy["id"]):
+                self.run_excluded(vacancy, "excluded_betting")
+
+    def test_exclusion_overwrites_stale_dry_run_letter_with_public_only_hash(self):
+        vacancy = {"id": "vacancy-stale", "name": "AI Lead", "description": "Управление LLM", "employer": {"name": "Sber Tech"}}
+        self.storage.record_vacancy(vacancy["id"], "dry_run_ready", score=99, input_hash="old-hash", reason="dry_run", generated_text="старое письмо")
+        self.run_excluded(vacancy, "excluded_employer")
+        with self.storage._connect() as conn:
+            row = conn.execute(
+                "SELECT status,score,input_hash,reason,generated_text FROM vacancy_decisions WHERE vacancy_id=?",
+                (vacancy["id"],),
+            ).fetchone()
+        self.assertEqual(row["status"], "ineligible")
+        self.assertIsNone(row["score"])
+        self.assertEqual(row["reason"], "excluded_employer")
+        self.assertIsNone(row["generated_text"])
+        self.assertEqual(row["input_hash"], self.storage.digest(json.dumps(vacancy, ensure_ascii=False, sort_keys=True)))
+
+    def test_general_bet_substring_and_financial_rates_are_not_excluded(self):
+        ordinary = {
+            "id": "vacancy-ordinary",
+            "name": "Product Manager",
+            "description": "A/B testing и процентные ставки по депозитам",
+            "employer": {"name": "BetterMe"},
+        }
+        self.assertIsNone(_vacancy_exclusion_reason(ordinary, self.config.search))
 
     def test_transport_protection_activates_hard_stop(self):
         error = BridgeError("forbidden", outcome=ResponseClass.PROTECTION)

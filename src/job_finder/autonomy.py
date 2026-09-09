@@ -6,28 +6,31 @@
 ## @scope One cycle; scheduling is owned by CLI daemon.
 ## @input Config, web adapter, LLM, local knowledge and Storage.
 ## @output RunReport with counts and non-secret reasons.
-## @invariants AI never selects commands or policy; each write starts with a transactional SQLite reservation that rechecks opt-in, hard-stop, quota and cadence.
+## @invariants AI never selects commands or policy; excluded employers/industries never reach AI; each write starts with a transactional SQLite reservation that rechecks opt-in, hard-stop, quota and cadence.
 ## @rationale
 ## Q: Why does the worker reserve immediately before calling the web client?
 ## A: A cycle may run for minutes; only a fresh serialized policy decision can honor disable/hard-stop changes made after the cycle began.
-## @changes LAST_CHANGE: [v0.2.1 — Added transactional per-write policy gates and crash-recoverable chat outbox sends.]
+## @changes LAST_CHANGE: [v0.3.1 — Added a deterministic post-detail exclusion gate before knowledge, AI and application preflight.]
 ## @modulemap
 ## CLASS 10[Non-secret cycle observability] => RunReport
+## FUNC 10[Classifies mandatory employer and betting exclusions] => _vacancy_exclusion_reason
 ## CLASS 10[Deterministic job and chat orchestrator] => AutonomousWorker
 def _module_contract() -> None:
     pass
 # endregion MODULE_CONTRACT
-# GREP_SUMMARY: autonomous worker, opt-in, dry-run, application, recruiter chat, limits, dedupe, hard stop
-# STRUCTURE: consent/safety -> search -> AI score -> preflight -> grounded text -> guarded write -> chats -> report
+# GREP_SUMMARY: autonomous worker, vacancy exclusions, opt-in, dry-run, application, recruiter chat, limits, dedupe, hard stop
+# STRUCTURE: consent/safety -> search -> detail exclusion -> AI score -> preflight -> grounded text -> guarded write -> chats -> report
 
 from dataclasses import asdict, dataclass, field
 import json
 import logging
+import re
 import threading
 from typing import Any
+import unicodedata
 
 from .bridge_server import BridgeError
-from .config import Config
+from .config import Config, SearchConfig
 from .knowledge import KnowledgeBase, render_chunks
 from .llm import GeneratedText, LLMError, LLMProvider, validate_grounded_text
 from .storage import Storage, WriteGuardError
@@ -54,6 +57,54 @@ class RunReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+EMPLOYER_PREFIX_ROOTS = frozenset({"сбер", "sber", "яндекс", "yandex"})
+INDUSTRY_PREFIX_ROOTS = frozenset({"букмекер", "беттинг"})
+POLICY_SEPARATOR_RE = re.compile(r"[^\w]+|_+", re.UNICODE)
+
+
+def _normalize_policy_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold().replace("ё", "е")
+    return " ".join(POLICY_SEPARATOR_RE.sub(" ", normalized).split())
+
+
+def _contains_policy_term(text: str, term: str, *, prefix: bool) -> bool:
+    if not text or not term:
+        return False
+    start = 0
+    while (index := text.find(term, start)) >= 0:
+        end = index + len(term)
+        left_boundary = index == 0 or text[index - 1] == " "
+        right_boundary = prefix or end == len(text) or text[end] == " "
+        if left_boundary and right_boundary:
+            return True
+        start = index + 1
+    return False
+
+
+# region FUNC_vacancy_exclusion_reason [DOMAIN(10): Safety; CONCEPT(10): PreAIPolicy; TECH(8): UnicodeNormalization]
+## @purpose Return a stable terminal reason when public vacancy data matches mandatory employer or betting exclusions.
+## @io vacancy, SearchConfig -> excluded_employer|excluded_betting|None
+## @complexity 6
+def _vacancy_exclusion_reason(vacancy: dict[str, Any], search: SearchConfig) -> str | None:
+    employer_source = vacancy.get("employer") or ""
+    employer = employer_source.get("name", "") if isinstance(employer_source, dict) else employer_source
+    normalized_employer = _normalize_policy_text(employer)
+    for raw_term in search.excluded_employer_terms:
+        term = _normalize_policy_text(raw_term)
+        if _contains_policy_term(normalized_employer, term, prefix=term in EMPLOYER_PREFIX_ROOTS):
+            return "excluded_employer"
+
+    normalized_public_text = _normalize_policy_text(
+        "\n".join(str(value or "") for value in (employer, vacancy.get("name"), vacancy.get("description")))
+    )
+    for raw_term in search.excluded_industry_terms:
+        term = _normalize_policy_text(raw_term)
+        if _contains_policy_term(normalized_public_text, term, prefix=term in INDUSTRY_PREFIX_ROOTS):
+            return "excluded_betting"
+    return None
+# endregion FUNC_vacancy_exclusion_reason
 
 
 # region CLASS_AutonomousWorker [DOMAIN(10): AutonomousJobSearch; CONCEPT(10): PolicyOwner; TECH(9): SequentialOrchestration]
@@ -157,6 +208,23 @@ class AutonomousWorker:
                 continue
             try:
                 vacancy = self.client.get_vacancy(vacancy_id)
+                exclusion_reason = _vacancy_exclusion_reason(vacancy, self.config.search)
+                if exclusion_reason:
+                    # BUG_FIX_CONTEXT: A previous dry-run decision could retain a generated letter,
+                    # and search-card filtering lacked the full employer/description context. The
+                    # terminal post-detail gate overwrites that state before knowledge or AI access.
+                    public_input_hash = self.storage.digest(json.dumps(vacancy, ensure_ascii=False, sort_keys=True))
+                    self.storage.record_vacancy(
+                        vacancy_id,
+                        "ineligible",
+                        score=None,
+                        input_hash=public_input_hash,
+                        reason=exclusion_reason,
+                        generated_text=None,
+                    )
+                    report.skip(exclusion_reason)
+                    logger.info("[IMP:10][AutonomousWorker][EXCLUDED] terminal reason=%s", exclusion_reason)
+                    continue
                 query = self._vacancy_query(vacancy)
                 knowledge = self._knowledge_for(query)
                 input_hash = self.storage.digest(json.dumps(vacancy, ensure_ascii=False, sort_keys=True) + knowledge)
