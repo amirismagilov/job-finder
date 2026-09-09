@@ -89,6 +89,12 @@ process.stdout.write(JSON.stringify({{search,vacancy,popup}}));
         self.assertIn("p.country_ids", executor)
         self.assertNotIn("x-gib", executor.lower())
 
+    def test_html_reads_do_not_impersonate_json_ajax_requests(self):
+        executor = (ROOT / "browser_extension/page_executor.js").read_text(encoding="utf-8")
+        self.assertIn('command.action === "SEARCH_VACANCIES" || command.action === "GET_VACANCY"', executor)
+        self.assertIn('{Accept: "text/html,application/xhtml+xml;q=0.9"}', executor)
+        self.assertIn('{Accept: "application/json", "X-Requested-With": "XMLHttpRequest"}', executor)
+
     def test_protection_detection_uses_visible_html_and_explicit_json_signals(self):
         module_path = json.dumps(str(ROOT / "browser_extension/projectors.js"))
         script = f'''

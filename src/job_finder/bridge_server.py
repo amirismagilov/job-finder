@@ -7,7 +7,7 @@
 ## @input Pairing secret in Authorization and typed envelopes.
 ## @output Validated ResponseEnvelope.
 ## @invariants Loopback only; extension identity is bound on first successful poll; request bodies are bounded and never logged.
-## @changes LAST_CHANGE: [v0.2.5 — Supported Chrome's omitted extension Origin while retaining secret and ID binding.]
+## @changes LAST_CHANGE: [v0.2.6 — Added non-sensitive HTTP status metadata to rejected-response diagnostics.]
 ## @modulemap
 ## CLASS 10[Thread-safe one-shot command rendezvous] => BridgeQueue
 ## CLASS 10[Loopback transport and pairing boundary] => BrowserBridgeServer
@@ -300,7 +300,14 @@ class BrowserBridgeServer:
         if self.storage:
             self.storage.record_bridge_command(command.command_id, command.action.value, outcome.value)
         if outcome is not ResponseClass.SUCCESS:
-            logger.error("[IMP:10][BrowserBridgeServer][SAFETY] Response classified as %s", outcome.value)
+            # BUG_FIX_CONTEXT: A generic `failure` hid whether hh.ru rejected an otherwise valid
+            # read request with a 4xx/5xx response. HTTP status is safe diagnostic metadata; body,
+            # redirect target, headers and browser credentials remain excluded from logs/audit.
+            logger.error(
+                "[IMP:10][BrowserBridgeServer][SAFETY] Response classified as %s status=%d",
+                outcome.value,
+                response.status,
+            )
             raise BridgeError(f"Ответ hh.ru классифицирован как {outcome.value}", outcome=outcome)
         return response
 # endregion CLASS_BrowserBridgeServer

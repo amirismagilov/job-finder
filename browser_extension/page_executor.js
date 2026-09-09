@@ -54,7 +54,13 @@
     if (location.hostname !== spec.host) throw new Error("wrong_origin");
     const url = new URL(`https://${spec.host}${spec.path}`);
     for (const [key, value] of Object.entries(spec.query || {})) url.searchParams.set(key, String(value));
-    const headers = {Accept: "application/json, text/html;q=0.9", "X-Requested-With": "XMLHttpRequest"};
+    // BUG_FIX_CONTEXT: hh.ru answers the HTML search route with 406 when it is presented as an
+    // XMLHttpRequest. Recorded benign navigation uses an HTML Accept header and no AJAX marker;
+    // JSON/application routes retain their existing explicit XMLHttpRequest contract.
+    const htmlRead = command.action === "SEARCH_VACANCIES" || command.action === "GET_VACANCY";
+    const headers = htmlRead
+      ? {Accept: "text/html,application/xhtml+xml;q=0.9"}
+      : {Accept: "application/json", "X-Requested-With": "XMLHttpRequest"};
     const init = {method: spec.method, credentials: "include", cache: "no-store", redirect: "follow", headers};
     if (spec.multipart) {
       const csrf = xsrf();
