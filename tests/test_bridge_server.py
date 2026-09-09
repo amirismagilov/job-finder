@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import logging
 import threading
 import unittest
 
@@ -19,10 +20,24 @@ class BridgeServerTest(unittest.TestCase):
         return SimpleNamespace(headers={"Authorization": "Bearer " + secret, "X-Job-Finder-Extension": extension, "Origin": "chrome-extension://" + extension})
 
     def test_rejects_wrong_pairing_secret_and_binds_extension(self):
-        self.assertFalse(self.server._authorized(self.handler(secret="b" * 64)))
+        with self.assertLogs("job_finder.bridge_server", level=logging.WARNING) as captured:
+            self.assertFalse(self.server._authorized(self.handler(secret="b" * 64)))
+        self.assertTrue(any("secret_mismatch" in line for line in captured.output))
         self.assertTrue(self.server._authorized(self.handler()))
         self.assertEqual(self.secrets.get("bridge_extension_id"), "abcdefghijklmnopabcdefghijklmnop")
-        self.assertFalse(self.server._authorized(self.handler(extension="ponmlkjihgfedcbaponmlkjihgfedcba")))
+        with self.assertLogs("job_finder.bridge_server", level=logging.WARNING) as captured:
+            self.assertFalse(self.server._authorized(self.handler(extension="ponmlkjihgfedcbaponmlkjihgfedcba")))
+        self.assertTrue(any("extension_binding_mismatch" in line for line in captured.output))
+
+    def test_auth_rejection_log_is_rate_limited_and_never_contains_secret(self):
+        self.server.storage = SimpleNamespace(events=[], audit=lambda *args, **kwargs: self.server.storage.events.append((args, kwargs)))
+        with self.assertLogs("job_finder.bridge_server", level=logging.WARNING) as captured:
+            self.assertFalse(self.server._authorized(self.handler(secret="b" * 64)))
+            self.assertFalse(self.server._authorized(self.handler(secret="c" * 64)))
+        self.assertEqual(sum("secret_mismatch" in line for line in captured.output), 1)
+        self.assertNotIn("b" * 64, "\n".join(captured.output))
+        self.assertNotIn("c" * 64, "\n".join(captured.output))
+        self.assertEqual(len(self.server.storage.events), 1)
 
     def test_command_queue_round_trip_is_one_shot(self):
         queue = BridgeQueue()

@@ -7,7 +7,7 @@
 ## @input Pairing secret in Authorization and typed envelopes.
 ## @output Validated ResponseEnvelope.
 ## @invariants Loopback only; extension identity is bound on first successful poll; request bodies are bounded and never logged.
-## @changes LAST_CHANGE: [v0.2.0 — Initial browser session bridge.]
+## @changes LAST_CHANGE: [v0.2.3 — Added rate-limited, non-secret authentication rejection diagnostics.]
 ## @modulemap
 ## CLASS 10[Thread-safe one-shot command rendezvous] => BridgeQueue
 ## CLASS 10[Loopback transport and pairing boundary] => BrowserBridgeServer
@@ -118,6 +118,7 @@ class BrowserBridgeServer:
         self._server: _BridgeHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._last_seen = 0.0
+        self._last_auth_failure: tuple[str, float] | None = None
 
     @property
     def paired(self) -> bool:
@@ -127,19 +128,38 @@ class BrowserBridgeServer:
     def connected(self) -> bool:
         return self.paired and time.monotonic() - self._last_seen < 20
 
+    def _auth_rejected(self, reason: str) -> bool:
+        """fixed reason code -> rate-limited local log/audit -> false authorization verdict."""
+        now = time.monotonic()
+        previous_reason, previous_at = self._last_auth_failure or ("", 0.0)
+        if reason != previous_reason or now - previous_at >= 60:
+            # BUG_FIX_CONTEXT: A single 401 hid secret, Origin, extension-ID and stale-binding
+            # failures behind the same UI message. Fixed reason codes expose no credential value.
+            logger.warning("[IMP:8][BrowserBridgeServer][AUTH_REJECTED] %s", reason)
+            if self.storage:
+                self.storage.audit(8, "bridge_auth_rejected", detail={"reason": reason})
+            self._last_auth_failure = (reason, now)
+        return False
+
     def _authorized(self, handler: BaseHTTPRequestHandler) -> bool:
         configured = self.secrets.get("bridge_pairing_secret") or ""
         supplied = handler.headers.get("Authorization", "")
         candidate = supplied[7:] if supplied.startswith("Bearer ") else ""
         extension_id = handler.headers.get("X-Job-Finder-Extension", "")
         origin = handler.headers.get("Origin", "")
-        if not configured or not hmac.compare_digest(configured, candidate):
-            return False
-        if not EXTENSION_ID_RE.fullmatch(extension_id) or origin != f"chrome-extension://{extension_id}":
-            return False
+        if not configured:
+            return self._auth_rejected("configured_secret_missing")
+        if not candidate:
+            return self._auth_rejected("authorization_missing")
+        if not hmac.compare_digest(configured, candidate):
+            return self._auth_rejected("secret_mismatch")
+        if not EXTENSION_ID_RE.fullmatch(extension_id):
+            return self._auth_rejected("extension_id_invalid")
+        if origin != f"chrome-extension://{extension_id}":
+            return self._auth_rejected("origin_mismatch")
         bound = self.secrets.get("bridge_extension_id")
         if bound and not hmac.compare_digest(bound, extension_id):
-            return False
+            return self._auth_rejected("extension_binding_mismatch")
         if not bound:
             self.secrets.set("bridge_extension_id", extension_id)
         self._last_seen = time.monotonic()
