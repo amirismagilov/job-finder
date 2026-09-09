@@ -38,6 +38,17 @@ class ExtensionContractTest(unittest.TestCase):
         self.assertNotIn("console.log", background)
         self.assertNotIn("pairingSecret: result", background)
 
+    def test_pairing_options_offer_copy_and_reveal_without_clipboard_permission(self):
+        manifest = json.loads((ROOT / "browser_extension/manifest.json").read_text(encoding="utf-8"))
+        html = (ROOT / "browser_extension/options.html").read_text(encoding="utf-8")
+        script = (ROOT / "browser_extension/options.js").read_text(encoding="utf-8")
+        self.assertIn('id="copy"', html)
+        self.assertIn('id="reveal"', html)
+        self.assertIn("navigator.clipboard.writeText", script)
+        self.assertIn('document.execCommand("copy")', script)
+        self.assertIn('secretInput.type = reveal ? "text" : "password"', script)
+        self.assertNotIn("clipboardWrite", manifest["permissions"])
+
     def test_large_html_is_projected_inside_browser_and_csrf_variants_do_not_leave(self):
         module_path = json.dumps(str(ROOT / "browser_extension/projectors.js"))
         script = f'''
