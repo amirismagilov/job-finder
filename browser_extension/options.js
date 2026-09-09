@@ -44,6 +44,29 @@ function toggleSecretVisibility() {
     : "Секрет снова скрыт.";
 }
 
+function connectionMessage(result) {
+  const messages = {
+    connected_idle: "Соединение установлено: bridge доступен, активных команд нет.",
+    command_completed: "Соединение установлено: команда получена и обработана.",
+    secret_missing: "Сначала создайте и сохраните pairing secret.",
+    pairing_rejected: "Bridge отклонил pairing secret. Создайте новый секрет и повторите bridge pair.",
+    bridge_unreachable: "Локальный bridge недоступен. Сначала запустите bridge или dry-run в Терминале.",
+    bridge_http_error: "Bridge вернул неожиданный HTTP-ответ.",
+    result_rejected: "Bridge получил команду, но отклонил её результат."
+  };
+  return messages[result && result.code] || "Не удалось определить состояние bridge.";
+}
+
+async function checkConnection() {
+  status.textContent = "Проверяю локальное соединение…";
+  try {
+    const result = await chrome.runtime.sendMessage({type: "JOB_FINDER_POLL_NOW"});
+    status.textContent = connectionMessage(result);
+  } catch (_error) {
+    status.textContent = "Service worker расширения недоступен. Перезагрузите расширение.";
+  }
+}
+
 async function load() {
   const state = await chrome.storage.local.get(["pairingSecret", "enabled"]);
   secretInput.value = state.pairingSecret || "";
@@ -56,9 +79,9 @@ revealButton.addEventListener("click", toggleSecretVisibility);
 document.getElementById("save").addEventListener("click", async () => {
   if (!/^[0-9a-f]{64}$/.test(secretInput.value)) { status.textContent = "Сначала создайте корректный секрет."; return; }
   await chrome.storage.local.set({pairingSecret: secretInput.value, enabled: true});
-  chrome.runtime.sendMessage({type: "JOB_FINDER_POLL_NOW"});
-  status.textContent = "Bridge включён.";
+  await checkConnection();
 });
+document.getElementById("check").addEventListener("click", checkConnection);
 document.getElementById("disable").addEventListener("click", async () => {
   await chrome.storage.local.set({enabled: false});
   status.textContent = "Bridge выключен.";

@@ -93,31 +93,41 @@ async function dispatchAllowedAction(command) {
 
 async function pollCommand() {
   const secret = await pairedSecret();
-  if (!secret) return;
+  if (!secret) return {ok: false, code: "secret_missing"};
   let response;
   try {
     response = await bridgeFetch("/v1/commands/next", secret);
-    if (!response.ok) return;
+    if (response.status === 401) return {ok: false, code: "pairing_rejected"};
+    if (!response.ok) return {ok: false, code: "bridge_http_error"};
     const payload = await response.json();
-    if (!payload.command) return;
+    if (!payload.command) return {ok: true, code: "connected_idle"};
     let result;
     try {
       result = await dispatchAllowedAction(payload.command);
     } catch (_error) {
       result = {command_id: payload.command.command_id, status: 0, content_type: "application/json", body: {executor_error: true}, redirect_path: ""};
     }
-    await bridgeFetch(`/v1/commands/${payload.command.command_id}/result`, secret, {
+    const submitted = await bridgeFetch(`/v1/commands/${payload.command.command_id}/result`, secret, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(result)
     });
+    if (submitted.status === 401) return {ok: false, code: "pairing_rejected"};
+    if (!submitted.ok) return {ok: false, code: "result_rejected"};
+    return {ok: true, code: "command_completed"};
   } catch (_error) {
-    // Local bridge can legitimately be offline. Credentials and response bodies are never logged.
+    // BUG_FIX_CONTEXT: Silently swallowing loopback failures made a pairing rejection
+    // indistinguishable from an offline bridge. Return only a fixed diagnostic code.
+    return {ok: false, code: "bridge_unreachable"};
   }
 }
 
 chrome.runtime.onInstalled.addListener(() => chrome.runtime.openOptionsPage());
 chrome.alarms.create("job-finder-poll", {periodInMinutes: 0.5});
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === "job-finder-poll") pollCommand(); });
-chrome.runtime.onMessage.addListener(message => { if (message && message.type === "JOB_FINDER_POLL_NOW") pollCommand(); });
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || message.type !== "JOB_FINDER_POLL_NOW") return false;
+  pollCommand().then(sendResponse);
+  return true;
+});
 pollCommand();

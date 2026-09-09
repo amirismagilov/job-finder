@@ -49,6 +49,17 @@ class ExtensionContractTest(unittest.TestCase):
         self.assertIn('secretInput.type = reveal ? "text" : "password"', script)
         self.assertNotIn("clipboardWrite", manifest["permissions"])
 
+    def test_pairing_options_report_fixed_loopback_diagnostics_without_secrets(self):
+        html = (ROOT / "browser_extension/options.html").read_text(encoding="utf-8")
+        options = (ROOT / "browser_extension/options.js").read_text(encoding="utf-8")
+        background = (ROOT / "browser_extension/background.js").read_text(encoding="utf-8")
+        self.assertIn('id="check"', html)
+        for code in ("connected_idle", "command_completed", "secret_missing", "pairing_rejected", "bridge_unreachable"):
+            self.assertIn(code, options)
+            self.assertIn(code, background)
+        self.assertIn("pollCommand().then(sendResponse)", background)
+        self.assertNotIn("console.log", background + options)
+
     def test_large_html_is_projected_inside_browser_and_csrf_variants_do_not_leave(self):
         module_path = json.dumps(str(ROOT / "browser_extension/projectors.js"))
         script = f'''
